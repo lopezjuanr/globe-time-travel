@@ -37,9 +37,12 @@
         /* ── Main ── */
         #main { flex: 1; display: flex; min-height: 0; }
 
-        /* ── Globe ── */
-        #globe-wrap { flex: 1; position: relative; cursor: crosshair; }
-        #globe-wrap canvas { display: block; width: 100% !important; height: 100% !important; }
+        /* ── Map ── */
+        #map-wrap {
+            flex: 1; position: relative; overflow: hidden; cursor: crosshair;
+            background: #0d1f2d;
+        }
+        #map-canvas { display: block; position: absolute; top: 0; left: 0; }
 
         /* ── Sidebar ── */
         #sidebar {
@@ -85,9 +88,7 @@
         .btn-accent.playing:hover { background: var(--red-dim); color: var(--text); }
 
         /* ── Preset cities ── */
-        .preset-grid {
-            display: grid; grid-template-columns: 1fr 1fr; gap: 0.35rem; margin-top: 0.1rem;
-        }
+        .preset-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.35rem; margin-top: 0.1rem; }
         .preset-btn {
             background: var(--bg-card); border: 1px solid var(--border); color: var(--text-muted);
             font-family: var(--font); font-size: 0.7rem; padding: 0.3rem 0.4rem; border-radius: 3px;
@@ -131,7 +132,7 @@
             position: absolute; bottom: 1rem; left: 50%; transform: translateX(-50%);
             background: rgba(10,10,15,0.88); border: 1px solid var(--border); border-radius: 4px;
             padding: 0.4rem 0.9rem; font-size: 0.75rem; color: var(--text-muted);
-            pointer-events: none; opacity: 0; transition: opacity 0.3s; white-space: nowrap;
+            pointer-events: none; opacity: 0; transition: opacity 0.3s; white-space: nowrap; z-index: 5;
         }
         #status.visible { opacity: 1; }
 
@@ -142,6 +143,12 @@
             vertical-align: middle; margin-right: 0.3em;
         }
         @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* ── Prefetch progress bar ── */
+        #prefetch-bar {
+            position: absolute; bottom: 0; left: 0; height: 2px;
+            background: var(--accent-dim); width: 0%; transition: width 0.3s; z-index: 5;
+        }
 
         /* ── Mobile ── */
         @media (max-width: 600px) { #sidebar { width: 220px; } #time-display { font-size: 1.2rem; } }
@@ -156,9 +163,10 @@
 </div>
 
 <div id="main">
-    <div id="globe-wrap">
-        <canvas id="globe-canvas"></canvas>
+    <div id="map-wrap">
+        <canvas id="map-canvas"></canvas>
         <div id="status"></div>
+        <div id="prefetch-bar"></div>
     </div>
 
     <div id="sidebar">
@@ -167,7 +175,7 @@
             <h2>Geological Time</h2>
             <div id="time-display">0 <span>Ma</span></div>
             <div id="era-label">Present day</div>
-            <input type="range" id="time-slider" min="0" max="1000" step="1" value="0">
+            <input type="range" id="time-slider" min="0" max="1000" step="10" value="0">
             <div class="slider-labels"><span>Present</span><span>500 Ma</span><span>1000 Ma</span></div>
             <button id="animate-btn" class="btn btn-accent">&#9654; Animate through time</button>
         </div>
@@ -182,13 +190,10 @@
         <div class="sidebar-section">
             <h2>How to use</h2>
             <p class="instruction">
-                <strong style="color:var(--text);display:block;margin-bottom:0.3rem;">Click the globe</strong>
+                <strong style="color:var(--text);display:block;margin-bottom:0.3rem;">Click the map</strong>
                 to drop a pin. Drag the time slider to watch it drift back through tectonic history.
             </p>
-            <p class="instruction" style="margin-top:0.5rem;">
-                <span class="key">drag</span> to rotate &nbsp; <span class="key">scroll</span> to zoom
-            </p>
-            <p class="note">Pins on oceanic crust show "outside range" at deep time — that crust has since subducted. Place pins on continents for best results.</p>
+            <p class="note">Pins on oceanic crust show "subducted" at deep time — place pins on continents for best results.</p>
         </div>
 
         <!-- Pin list -->
@@ -203,16 +208,18 @@
     </div>
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
 // ═══════════════════════════════════════════════════════════
 //  CONFIG
 // ═══════════════════════════════════════════════════════════
 const GWS_BASE    = 'https://gws.gplates.org';
 const MODEL       = 'MERDITH2021';
-const GLOBE_R     = 1.0;
-const PIN_R       = 0.016;
-const TRAIL_TIMES = [0,50,100,150,200,250,300,350,400,450,500,550,600,650,700,750,800,850,900,950,1000];
+const ANIM_STEP   = 10;   // Ma per animation step
+const ANIM_PAUSE  = 400;  // ms between steps (after load)
+const PREFETCH_AHEAD = 3; // how many steps to pre-fetch ahead of current
+
+// Trail sample times (every 50 Ma)
+const TRAIL_TIMES = Array.from({length: 21}, (_, i) => i * 50);
 
 const PRESETS = [
     { name: 'New York',   lat: 40.71,  lon: -74.01 },
@@ -249,230 +256,294 @@ function getEraName(ma) {
 }
 
 // ═══════════════════════════════════════════════════════════
-//  THREE.JS SCENE
+//  CANVAS + PROJECTION  (Equirectangular / PlateCarrée)
 // ═══════════════════════════════════════════════════════════
-const canvas   = document.getElementById('globe-canvas');
-const wrap     = document.getElementById('globe-wrap');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-renderer.setClearColor(0x000000, 1);
+const mapWrap  = document.getElementById('map-wrap');
+const canvas   = document.getElementById('map-canvas');
+const ctx      = canvas.getContext('2d');
 
-const scene  = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 100);
-camera.position.set(0, 0, 2.8);
-
-scene.add(new THREE.AmbientLight(0xffffff, 0.4));
-const sun = new THREE.DirectionalLight(0xffffff, 1.0);
-sun.position.set(5, 3, 5);
-scene.add(sun);
-
-const globeGroup = new THREE.Group();
-scene.add(globeGroup);
-
-const oceanMesh = new THREE.Mesh(
-    new THREE.SphereGeometry(GLOBE_R, 64, 64),
-    new THREE.MeshPhongMaterial({ color: 0x1a425a, shininess: 18 })
-);
-globeGroup.add(oceanMesh);
-
-globeGroup.add(new THREE.Mesh(
-    new THREE.SphereGeometry(GLOBE_R * 1.025, 32, 32),
-    new THREE.MeshPhongMaterial({ color: 0x4a9eff, transparent: true, opacity: 0.05, side: THREE.BackSide })
-));
-
-const continentGroup = new THREE.Group();
-globeGroup.add(continentGroup);
-const pinGroup = new THREE.Group();
-globeGroup.add(pinGroup);
-const trailGroup = new THREE.Group();
-globeGroup.add(trailGroup);
+let W = 0, H = 0;
 
 function resize() {
-    const w = wrap.clientWidth, h = wrap.clientHeight;
-    renderer.setSize(w, h, false);
-    camera.aspect = w / h;
-    camera.updateProjectionMatrix();
+    W = mapWrap.clientWidth;
+    H = mapWrap.clientHeight;
+    canvas.width  = W;
+    canvas.height = H;
+    redraw();
 }
-resize();
 window.addEventListener('resize', resize);
 
+// Equirectangular: lon [-180,180] → x, lat [-90,90] → y
+// We add a small vertical margin so the poles aren't clipped
+const LAT_RANGE = 170; // degrees shown vertically (±85)
+
+function lonLatToXY(lon, lat) {
+    const x = (lon + 180) / 360 * W;
+    const y = (1 - (lat + LAT_RANGE / 2) / LAT_RANGE) * H;
+    return [x, y];
+}
+
+function xyToLonLat(x, y) {
+    const lon = x / W * 360 - 180;
+    const lat = (1 - y / H) * LAT_RANGE - LAT_RANGE / 2;
+    return [lon, lat];
+}
+
 // ═══════════════════════════════════════════════════════════
-//  ORBIT CONTROLS
+//  DOUGLAS-PEUCKER SIMPLIFICATION
 // ═══════════════════════════════════════════════════════════
-let isDragging = false, dragDelta = 0;
-let prevMouse  = { x: 0, y: 0 };
-let rotX = 0, rotY = 0, zoom = 2.8;
-
-canvas.addEventListener('mousedown', e => {
-    dragDelta = 0;
-    prevMouse = { x: e.clientX, y: e.clientY };
-    const onMove = ev => {
-        const dx = ev.clientX - prevMouse.x, dy = ev.clientY - prevMouse.y;
-        dragDelta += Math.abs(dx) + Math.abs(dy);
-        if (dragDelta > 3) isDragging = true;
-        rotY += dx * 0.005; rotX += dy * 0.005;
-        rotX = Math.max(-Math.PI/2, Math.min(Math.PI/2, rotX));
-        globeGroup.rotation.set(rotX, rotY, 0);
-        prevMouse = { x: ev.clientX, y: ev.clientY };
-    };
-    const onUp = ev => {
-        window.removeEventListener('mousemove', onMove);
-        window.removeEventListener('mouseup', onUp);
-        if (!isDragging) handleGlobeClick(ev);
-        isDragging = false;
-    };
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-});
-
-canvas.addEventListener('wheel', e => {
-    zoom = Math.max(1.3, Math.min(6, zoom + e.deltaY * 0.005));
-    camera.position.z = zoom;
-    e.preventDefault();
-}, { passive: false });
-
-let touchStart = null;
-canvas.addEventListener('touchstart', e => {
-    if (e.touches.length === 1) { touchStart = { x: e.touches[0].clientX, y: e.touches[0].clientY }; dragDelta = 0; isDragging = false; }
-}, { passive: true });
-canvas.addEventListener('touchmove', e => {
-    if (e.touches.length === 1 && touchStart) {
-        const dx = e.touches[0].clientX - touchStart.x, dy = e.touches[0].clientY - touchStart.y;
-        dragDelta += Math.abs(dx) + Math.abs(dy);
-        if (dragDelta > 5) isDragging = true;
-        rotY += dx * 0.005; rotX += dy * 0.005;
-        rotX = Math.max(-Math.PI/2, Math.min(Math.PI/2, rotX));
-        globeGroup.rotation.set(rotX, rotY, 0);
-        touchStart = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+function dpSimplify(pts, tolerance) {
+    if (pts.length <= 2) return pts;
+    let maxDist = 0, maxIdx = 0;
+    const [x1, y1] = pts[0], [x2, y2] = pts[pts.length - 1];
+    const dx = x2 - x1, dy = y2 - y1, len = Math.sqrt(dx*dx + dy*dy);
+    for (let i = 1; i < pts.length - 1; i++) {
+        const [px, py] = pts[i];
+        const d = len === 0
+            ? Math.sqrt((px-x1)**2 + (py-y1)**2)
+            : Math.abs(dy*px - dx*py + x2*y1 - y2*x1) / len;
+        if (d > maxDist) { maxDist = d; maxIdx = i; }
     }
-    e.preventDefault();
-}, { passive: false });
-canvas.addEventListener('touchend', e => {
-    if (!isDragging && touchStart) handleGlobeClick({ clientX: touchStart.x, clientY: touchStart.y });
-    touchStart = null;
-}, { passive: true });
-
-// ═══════════════════════════════════════════════════════════
-//  GEO HELPERS
-// ═══════════════════════════════════════════════════════════
-function latLonToVec3(lat, lon, r) {
-    const phi   = (90 - lat)  * Math.PI / 180;
-    const theta = (lon + 180) * Math.PI / 180;
-    return new THREE.Vector3(
-        -r * Math.sin(phi) * Math.cos(theta),
-         r * Math.cos(phi),
-         r * Math.sin(phi) * Math.sin(theta)
-    );
-}
-function vec3ToLatLon(v) {
-    const r   = v.length();
-    const lat = 90 - Math.acos(Math.max(-1, Math.min(1, v.y / r))) * 180 / Math.PI;
-    const lon = Math.atan2(v.z, -v.x) * 180 / Math.PI - 180;
-    return { lat, lon: ((lon + 540) % 360) - 180 };
+    if (maxDist > tolerance) {
+        const left  = dpSimplify(pts.slice(0, maxIdx + 1), tolerance);
+        const right = dpSimplify(pts.slice(maxIdx), tolerance);
+        return [...left.slice(0, -1), ...right];
+    }
+    return [pts[0], pts[pts.length - 1]];
 }
 
 // ═══════════════════════════════════════════════════════════
-//  COASTLINES
+//  COASTLINE DATA CACHE  +  FETCH
 // ═══════════════════════════════════════════════════════════
-const coastlineCache = {};
-let currentCoastlineTime = -1;
-let coastlineAbortCtrl   = null;   // cancel in-flight fetch when time changes
-let coastlineInflight    = null;   // promise for the currently-loading time
+// Cache stores pre-processed arrays of simplified screen-space rings
+// Shape: { rings: [ [[x,y],...], ... ] }  — already projected + simplified
+const coastCache  = {};   // time → { rings }
+const fetchPromises = {};  // time → Promise  (deduplicate concurrent fetches)
 
-async function fetchCoastlines(time, signal) {
-    if (coastlineCache[time]) return coastlineCache[time];
-    const res = await fetch(
-        `${GWS_BASE}/reconstruct/coastlines/?time=${time}&model=${MODEL}&fmt=geojson`,
-        { signal }
-    );
-    const gj  = await res.json();
-    const grp = new THREE.Group();
-    const mat = new THREE.LineBasicMaterial({ color: 0xa07c5a, opacity: 0.9, transparent: true });
+// Simplification tolerance in degrees (applied before projection)
+const SIMPLIFY_TOL = 0.4;  // ~40km; invisible at screen scale
+
+function geojsonToRings(gj) {
+    const rings = [];
     for (const feat of gj.features) {
         const geom  = feat.geometry;
-        const rings = geom.type === 'Polygon' ? geom.coordinates : geom.type === 'MultiPolygon' ? geom.coordinates.flat() : [];
-        for (const ring of rings) {
-            const pts = ring.map(([lon, lat]) => latLonToVec3(lat, lon, GLOBE_R * 1.001));
-            if (pts.length >= 2) grp.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat));
+        const polys = geom.type === 'Polygon'      ? [geom.coordinates]
+                    : geom.type === 'MultiPolygon' ? geom.coordinates
+                    : [];
+        for (const poly of polys) {
+            for (const ring of poly) {
+                if (ring.length < 2) continue;
+                const simplified = dpSimplify(ring, SIMPLIFY_TOL);
+                if (simplified.length >= 2) rings.push(simplified);
+            }
         }
     }
-    coastlineCache[time] = grp;
-    return grp;
+    return rings;
 }
 
-async function updateCoastlines(time) {
-    if (time === currentCoastlineTime) return;
-    // Cancel any in-flight request for a different time
-    if (coastlineAbortCtrl) { coastlineAbortCtrl.abort(); coastlineAbortCtrl = null; }
-    currentCoastlineTime = time;
-    showStatus('<span class="spinner"></span> Loading coastlines…');
-    const ctrl = new AbortController();
-    coastlineAbortCtrl = ctrl;
-    try {
-        const grp = await fetchCoastlines(time, ctrl.signal);
-        // Only apply if this is still the requested time (not superseded)
-        if (currentCoastlineTime === time) {
-            continentGroup.clear();
-            continentGroup.add(grp);
+// Fetch coastlines for a given time, deduplicating concurrent requests
+function fetchCoastlines(time) {
+    if (coastCache[time]) return Promise.resolve(coastCache[time]);
+    if (fetchPromises[time]) return fetchPromises[time];
+    const url = `${GWS_BASE}/reconstruct/coastlines/?time=${time}&model=${MODEL}&fmt=geojson`;
+    const p = fetch(url)
+        .then(r => r.json())
+        .then(gj => {
+            const data = { rings: geojsonToRings(gj) };
+            coastCache[time] = data;
+            delete fetchPromises[time];
+            updatePrefetchBar();
+            return data;
+        })
+        .catch(e => {
+            delete fetchPromises[time];
+            throw e;
+        });
+    fetchPromises[time] = p;
+    return p;
+}
+
+// Priority fetch: load a time and display it atomically with pins
+let displayedTime = -1;
+let priorityTime  = -1;   // the time we most recently asked to display
+
+async function loadAndDisplay(time) {
+    if (displayedTime === time && coastCache[time]) return;
+    priorityTime = time;  // record intent
+
+    if (!coastCache[time]) {
+        showStatus('<span class="spinner"></span> Loading coastlines…');
+        try {
+            await fetchCoastlines(time);
+        } catch(e) {
+            console.warn('Coastline fetch error:', e);
             hideStatus();
+            return;
         }
-    } catch(e) {
-        if (e.name !== 'AbortError') console.warn('Coastline fetch error:', e);
-    } finally {
-        if (coastlineAbortCtrl === ctrl) coastlineAbortCtrl = null;
+    }
+
+    // Only apply if this is still the most-recently-requested time
+    if (priorityTime !== time) return;
+
+    // Atomic swap: update displayed time AND pin positions together
+    displayedTime = time;
+    pins.forEach(p => positionPin(p, time));
+    redraw();
+    hideStatus();
+    renderPinList();
+
+    // Kick off background pre-fetches for nearby times
+    schedulePrefetch(time);
+}
+
+// Background pre-fetch for upcoming animation frames
+function schedulePrefetch(currentT) {
+    const steps = [];
+    for (let i = 1; i <= PREFETCH_AHEAD; i++) {
+        const t = currentT + animDir * ANIM_STEP * i;
+        if (t >= 0 && t <= 1000 && !coastCache[t] && !fetchPromises[t]) steps.push(t);
+    }
+    steps.forEach(t => { fetchCoastlines(t).catch(() => {}); });
+    updatePrefetchBar();
+}
+
+function updatePrefetchBar() {
+    const total   = Math.ceil(1000 / ANIM_STEP) + 1;
+    const cached  = Object.keys(coastCache).length;
+    document.getElementById('prefetch-bar').style.width = `${Math.min(cached / total * 100, 100)}%`;
+}
+
+// ═══════════════════════════════════════════════════════════
+//  CANVAS DRAW
+// ═══════════════════════════════════════════════════════════
+function redraw() {
+    if (W === 0 || H === 0) return;
+    ctx.clearRect(0, 0, W, H);
+
+    // Ocean background
+    ctx.fillStyle = '#0d1f2d';
+    ctx.fillRect(0, 0, W, H);
+
+    // Graticule (subtle grid)
+    ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+    ctx.lineWidth = 0.5;
+    for (let lon = -180; lon <= 180; lon += 30) {
+        const [x] = lonLatToXY(lon, 0);
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+    }
+    for (let lat = -60; lat <= 60; lat += 30) {
+        const [, y] = lonLatToXY(0, lat);
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    }
+
+    // Coastlines
+    const data = coastCache[displayedTime];
+    if (data) {
+        ctx.strokeStyle = '#a07c5a';
+        ctx.lineWidth   = 0.8;
+        ctx.globalAlpha = 0.9;
+        for (const ring of data.rings) {
+            ctx.beginPath();
+            let first = true;
+            for (const [lon, lat] of ring) {
+                const [x, y] = lonLatToXY(lon, lat);
+                if (first) { ctx.moveTo(x, y); first = false; }
+                else        ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+        }
+        ctx.globalAlpha = 1;
+    }
+
+    // Trails
+    ctx.globalAlpha = 0.35;
+    for (const pin of pins) {
+        const trailPts = TRAIL_TIMES
+            .filter(t => t in pin.pastCoords && pin.pastCoords[t] && pin.pastCoords[t][0] !== null)
+            .map(t => lonLatToXY(pin.pastCoords[t][0], pin.pastCoords[t][1]));
+        if (trailPts.length < 2) continue;
+        ctx.strokeStyle = '#ff3b3b';
+        ctx.lineWidth   = 1.2;
+        ctx.setLineDash([3, 4]);
+        ctx.beginPath();
+        ctx.moveTo(...trailPts[0]);
+        for (let i = 1; i < trailPts.length; i++) ctx.lineTo(...trailPts[i]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+    }
+    ctx.globalAlpha = 1;
+
+    // Pins
+    for (const pin of pins) {
+        const pos = pin.screenPos;
+        if (!pos) continue;
+        const isSelected = pin.id === selectedPinId;
+        const r = isSelected ? 7 : 5;
+
+        // Drop shadow
+        ctx.shadowColor   = '#ff3b3b';
+        ctx.shadowBlur    = isSelected ? 12 : 6;
+        ctx.fillStyle     = isSelected ? '#ff8888' : '#ff3b3b';
+        ctx.beginPath();
+        ctx.arc(pos[0], pos[1], r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+
+        // White ring for selected
+        if (isSelected) {
+            ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+            ctx.lineWidth   = 1.5;
+            ctx.beginPath();
+            ctx.arc(pos[0], pos[1], r + 2, 0, Math.PI * 2);
+            ctx.stroke();
+        }
     }
 }
 
 // ═══════════════════════════════════════════════════════════
 //  PINS
 // ═══════════════════════════════════════════════════════════
-let pins = [], selectedPinId = null, pinIdCounter = 0, currentTime = 0;
-
-const PIN_MAT     = new THREE.MeshPhongMaterial({ color: 0xff3b3b, emissive: 0x550000, shininess: 60 });
-const PIN_SEL_MAT = new THREE.MeshPhongMaterial({ color: 0xff8888, emissive: 0x993333, shininess: 80 });
-const PIN_GEO     = new THREE.SphereGeometry(PIN_R, 12, 12);
+let pins = [], selectedPinId = null, pinIdCounter = 0;
+let currentTime = 0;
 
 function addPin(lat, lon, label) {
-    const id   = ++pinIdCounter;
-    const mesh = new THREE.Mesh(PIN_GEO, PIN_MAT.clone());
-    mesh.userData.pinId = id;
-    pinGroup.add(mesh);
-    const pin = { id, lat, lon, label: label || null, mesh, pastCoords: {} };
+    const id  = ++pinIdCounter;
+    const pin = { id, lat, lon, label: label || null, pastCoords: {}, screenPos: null };
     pins.push(pin);
-    positionPinMesh(pin, currentTime);
+    positionPin(pin, currentTime);
     renderPinList();
     document.getElementById('clear-btn').style.display = 'block';
-    prefetchTrail(pin);
+    prefetchPinTrail(pin);
     return pin;
 }
 
 function removePin(id) {
     const idx = pins.findIndex(p => p.id === id);
     if (idx === -1) return;
-    pinGroup.remove(pins[idx].mesh);
     pins.splice(idx, 1);
     if (selectedPinId === id) selectedPinId = null;
-    rebuildTrails();
+    redraw();
     renderPinList();
     if (pins.length === 0) document.getElementById('clear-btn').style.display = 'none';
 }
 
 function clearAllPins() {
-    pins.forEach(p => pinGroup.remove(p.mesh));
     pins = []; selectedPinId = null;
-    trailGroup.clear(); renderPinList();
+    redraw(); renderPinList();
     document.getElementById('clear-btn').style.display = 'none';
 }
 
-function positionPinMesh(pin, time) {
+// Set pin.screenPos from its pastCoords at the given time
+function positionPin(pin, time) {
     const c = pin.pastCoords[time];
     if (c === undefined) {
-        pin.mesh.position.copy(latLonToVec3(pin.lat, pin.lon, GLOBE_R * 1.014));
-        pin.mesh.visible = true; return;
+        // No data yet — show at present-day position as placeholder
+        pin.screenPos = lonLatToXY(pin.lon, pin.lat);
+    } else if (c === null || c[0] === null) {
+        pin.screenPos = null;  // subducted
+    } else {
+        pin.screenPos = lonLatToXY(c[0], c[1]);
     }
-    if (c === null || c[0] === null) { pin.mesh.visible = false; return; }
-    pin.mesh.position.copy(latLonToVec3(c[1], c[0], GLOBE_R * 1.014));
-    pin.mesh.visible = true;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -490,13 +561,12 @@ async function reconstructAllPins(time) {
             needed.forEach((pin, i) => { pin.pastCoords[time] = coords[i] || null; });
         } catch(e) { console.warn('Reconstruct error:', e); }
     }
-    pins.forEach(p => positionPinMesh(p, time));
-    renderPinList();
+    // Note: we do NOT call positionPin here — that happens atomically in loadAndDisplay
 }
 
-async function prefetchTrail(pin) {
+async function prefetchPinTrail(pin) {
     const needed = TRAIL_TIMES.filter(t => !(t in pin.pastCoords));
-    if (needed.length === 0) { buildTrailForPin(pin); return; }
+    if (needed.length === 0) { redraw(); return; }
     await Promise.all(needed.map(async t => {
         try {
             const res  = await fetch(`${GWS_BASE}/reconstruct/reconstruct_points/?points=${pin.lon},${pin.lat}&time=${t}&model=${MODEL}&return_null_points=true`);
@@ -504,53 +574,38 @@ async function prefetchTrail(pin) {
             pin.pastCoords[t] = (data.coordinates && data.coordinates[0]) || null;
         } catch(e) { pin.pastCoords[t] = null; }
     }));
-    buildTrailForPin(pin);
+    redraw();
 }
-
-// ═══════════════════════════════════════════════════════════
-//  TRAILS
-// ═══════════════════════════════════════════════════════════
-function buildTrailForPin(pin) {
-    trailGroup.children.filter(c => c.userData.pinId === pin.id).forEach(c => trailGroup.remove(c));
-    const pts = Object.keys(pin.pastCoords).map(Number).filter(t => t >= 0 && t <= 1000).sort((a,b) => a-b)
-        .map(t => { const c = pin.pastCoords[t]; return c && c[0] !== null ? latLonToVec3(c[1], c[0], GLOBE_R * 1.006) : null; })
-        .filter(Boolean);
-    if (pts.length < 2) return;
-    const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
-        new THREE.LineBasicMaterial({ color: 0xff3b3b, opacity: 0.28, transparent: true }));
-    line.userData.pinId = pin.id;
-    trailGroup.add(line);
-}
-function rebuildTrails() { trailGroup.clear(); pins.forEach(p => buildTrailForPin(p)); }
 
 // ═══════════════════════════════════════════════════════════
 //  CLICK HANDLER
 // ═══════════════════════════════════════════════════════════
-const raycaster = new THREE.Raycaster();
-const mouse2    = new THREE.Vector2();
-
-function handleGlobeClick(e) {
+canvas.addEventListener('click', e => {
     const rect = canvas.getBoundingClientRect();
-    mouse2.x =  ((e.clientX - rect.left) / rect.width)  * 2 - 1;
-    mouse2.y = -((e.clientY - rect.top)  / rect.height) * 2 + 1;
-    raycaster.setFromCamera(mouse2, camera);
+    const cx   = e.clientX - rect.left;
+    const cy   = e.clientY - rect.top;
 
-    const pinHits = raycaster.intersectObjects(pins.map(p => p.mesh));
-    if (pinHits.length > 0) {
-        selectedPinId = pinHits[0].object.userData.pinId;
-        renderPinList(); return;
+    // Check if clicking an existing pin (within 12px)
+    for (const pin of pins) {
+        if (!pin.screenPos) continue;
+        const dx = cx - pin.screenPos[0], dy = cy - pin.screenPos[1];
+        if (Math.sqrt(dx*dx + dy*dy) < 12) {
+            selectedPinId = pin.id;
+            redraw(); renderPinList(); return;
+        }
     }
 
-    const hits = raycaster.intersectObject(oceanMesh);
-    if (hits.length === 0) return;
-
-    const localPt = globeGroup.worldToLocal(hits[0].point.clone());
-    const { lat, lon } = vec3ToLatLon(localPt);
+    // Place new pin
+    const [lon, lat] = xyToLonLat(cx, cy);
     const pin = addPin(lat, lon);
     selectedPinId = pin.id;
-    reconstructAllPins(currentTime);
+    reconstructAllPins(currentTime).then(() => {
+        positionPin(pin, currentTime);
+        redraw(); renderPinList();
+    });
     showStatus(`Pin placed at ${lat.toFixed(2)}°, ${lon.toFixed(2)}°`, 2500);
-}
+    redraw();
+});
 
 // ═══════════════════════════════════════════════════════════
 //  TIME SLIDER
@@ -558,16 +613,16 @@ function handleGlobeClick(e) {
 const slider      = document.getElementById('time-slider');
 const timeDisplay = document.getElementById('time-display');
 const eraLabel    = document.getElementById('era-label');
-let reconstructTimer = null;
+let sliderDebounce = null;
 
 slider.addEventListener('input', () => {
     currentTime = parseInt(slider.value);
     updateTimeDisplay(currentTime);
-    clearTimeout(reconstructTimer);
-    reconstructTimer = setTimeout(async () => {
-        await Promise.all([updateCoastlines(currentTime), reconstructAllPins(currentTime)]);
-        rebuildTrails();
-    }, 100);
+    clearTimeout(sliderDebounce);
+    sliderDebounce = setTimeout(async () => {
+        await reconstructAllPins(currentTime);
+        await loadAndDisplay(currentTime);
+    }, 80);
 });
 
 function updateTimeDisplay(ma) {
@@ -575,39 +630,24 @@ function updateTimeDisplay(ma) {
     eraLabel.textContent  = getEraName(ma);
 }
 
-function setTime(t) {
-    currentTime = t;
-    slider.value = t;
-    updateTimeDisplay(t);
-    clearTimeout(reconstructTimer);
-    reconstructTimer = setTimeout(async () => {
-        await Promise.all([updateCoastlines(t), reconstructAllPins(t)]);
-        rebuildTrails();
-    }, 100);
-}
-
 // ═══════════════════════════════════════════════════════════
-//  ANIMATE  — step-and-wait: advance only after coastlines load
+//  ANIMATE  — step-and-wait loop
 // ═══════════════════════════════════════════════════════════
 const animBtn = document.getElementById('animate-btn');
 let animRunning = false, animDir = 1;
 
 async function animLoop() {
     while (animRunning) {
-        let t = currentTime + animDir * 10;
+        let t = currentTime + animDir * ANIM_STEP;
         if (t >= 1000) { t = 1000; animDir = -1; }
         if (t <= 0)    { t = 0;    animDir =  1; }
         currentTime = t;
         slider.value = t;
         updateTimeDisplay(t);
-        // Wait for both coastlines AND pin reconstruction before next step
-        await Promise.all([
-            updateCoastlines(t),
-            reconstructAllPins(t)
-        ]);
-        rebuildTrails();
-        // Pause between frames so the user can see each position
-        await new Promise(r => setTimeout(r, 600));
+        // Reconstruct pins and load coastlines together, then display atomically
+        await Promise.all([reconstructAllPins(t), loadAndDisplay(t)]);
+        // Brief pause so the frame is visible
+        if (animRunning) await new Promise(r => setTimeout(r, ANIM_PAUSE));
     }
 }
 
@@ -635,9 +675,12 @@ PRESETS.forEach(p => {
     btn.addEventListener('click', () => {
         const pin = addPin(p.lat, p.lon, p.name);
         selectedPinId = pin.id;
-        reconstructAllPins(currentTime);
-        spinToLatLon(p.lat, p.lon);
+        reconstructAllPins(currentTime).then(() => {
+            positionPin(pin, currentTime);
+            redraw(); renderPinList();
+        });
         showStatus(`Pin placed: ${p.name}`, 2500);
+        redraw();
     });
     presetGrid.appendChild(btn);
 });
@@ -670,67 +713,22 @@ function renderPinList() {
         }
 
         const displayName = pin.label || `Pin ${pin.id}`;
-        const coordStr    = `${pin.lat.toFixed(2)}°, ${pin.lon.toFixed(2)}°`;
-
         const item = document.createElement('div');
         item.className = 'pin-item' + (selectedPinId === pin.id ? ' selected' : '');
         item.innerHTML = `
             <div class="pin-dot${isNull ? ' hidden-pin' : ''}"></div>
             <div class="pin-coords">
                 <strong>${displayName}</strong>
-                ${coordStr}
+                ${pin.lat.toFixed(2)}°, ${pin.lon.toFixed(2)}°
                 <div class="pin-past${isNull ? ' null-pos' : ''}">${pastStr}</div>
             </div>
             <button class="pin-remove" title="Remove pin">&#215;</button>
         `;
         item.querySelector('.pin-remove').addEventListener('click', ev => { ev.stopPropagation(); removePin(pin.id); });
-        item.addEventListener('click', () => {
-            selectedPinId = pin.id; renderPinList();
-            const coord = pin.pastCoords[currentTime];
-            if (coord && coord[0] !== null) spinToLatLon(coord[1], coord[0]);
-            else spinToLatLon(pin.lat, pin.lon);
-        });
+        item.addEventListener('click', () => { selectedPinId = pin.id; redraw(); renderPinList(); });
         list.appendChild(item);
     });
-
-    pins.forEach(p => { p.mesh.material = (selectedPinId === p.id ? PIN_SEL_MAT : PIN_MAT).clone(); });
 }
-
-// ═══════════════════════════════════════════════════════════
-//  SPIN TO LAT/LON
-// ═══════════════════════════════════════════════════════════
-function spinToLatLon(lat, lon) {
-    const tY = -(lon * Math.PI / 180), tX = -(lat * Math.PI / 180) * 0.45;
-    const sY = rotY, sX = rotX;
-    let f = 0;
-    const step = () => {
-        f++;
-        const t = Math.min(f / 25, 1);
-        const ease = t < 0.5 ? 2*t*t : -1+(4-2*t)*t;
-        rotY = sY + (tY - sY) * ease;
-        rotX = sX + (tX - sX) * ease;
-        globeGroup.rotation.set(rotX, rotY, 0);
-        if (t < 1) requestAnimationFrame(step);
-    };
-    requestAnimationFrame(step);
-}
-
-// ═══════════════════════════════════════════════════════════
-//  RENDER LOOP
-// ═══════════════════════════════════════════════════════════
-function animate() {
-    requestAnimationFrame(animate);
-    // Hide pins on back hemisphere
-    pins.forEach(pin => {
-        if (!pin.mesh.visible) return;
-        const wp = new THREE.Vector3();
-        pin.mesh.getWorldPosition(wp);
-        const toCam  = new THREE.Vector3().subVectors(camera.position, wp).normalize();
-        pin.mesh.visible = toCam.dot(wp.clone().normalize()) > 0.05;
-    });
-    renderer.render(scene, camera);
-}
-animate();
 
 // ═══════════════════════════════════════════════════════════
 //  STATUS
@@ -748,9 +746,11 @@ function hideStatus() { statusEl.classList.remove('visible'); }
 //  INIT
 // ═══════════════════════════════════════════════════════════
 (async () => {
+    resize();
     showStatus('<span class="spinner"></span> Loading present-day coastlines…');
-    await updateCoastlines(0);
-    hideStatus();
+    await loadAndDisplay(0);
+    // Kick off background pre-fetch of the first few animation steps
+    schedulePrefetch(0);
 })();
 </script>
 </body>
