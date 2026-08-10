@@ -150,6 +150,21 @@
             background: var(--accent-dim); width: 0%; transition: width 0.3s; z-index: 5;
         }
 
+        /* ── Subduction banner ── */
+        #subduction-banner {
+            position: absolute; top: 0.8rem; left: 50%; transform: translateX(-50%);
+            background: rgba(10,10,20,0.92); border-radius: 6px;
+            padding: 0.55rem 1rem; font-size: 0.75rem; line-height: 1.55;
+            pointer-events: none; opacity: 0; transition: opacity 0.35s;
+            white-space: nowrap; z-index: 6; max-width: calc(100% - 2rem);
+            white-space: normal; text-align: center;
+        }
+        #subduction-banner.visible { opacity: 1; }
+        .sub-row { display: flex; align-items: center; gap: 0.45rem; justify-content: center; margin: 0.15rem 0; }
+        .sub-swatch { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+        .sub-name { font-weight: 500; }
+        .sub-note { color: var(--text-dim); font-size: 0.7rem; }
+
         /* ── Mobile ── */
         @media (max-width: 600px) { #sidebar { width: 220px; } #time-display { font-size: 1.2rem; } }
     </style>
@@ -166,6 +181,7 @@
     <div id="map-wrap">
         <canvas id="map-canvas"></canvas>
         <div id="status"></div>
+        <div id="subduction-banner"></div>
         <div id="prefetch-bar"></div>
     </div>
 
@@ -391,6 +407,7 @@ async function loadAndDisplay(time) {
     redraw();
     hideStatus();
     renderPinList();
+    updateSubductionBanner();
 
     // Kick off background pre-fetches for nearby times
     schedulePrefetch(time);
@@ -462,7 +479,7 @@ function redraw() {
             .filter(t => t in pin.pastCoords && pin.pastCoords[t] && pin.pastCoords[t][0] !== null)
             .map(t => lonLatToXY(pin.pastCoords[t][0], pin.pastCoords[t][1]));
         if (trailPts.length < 2) continue;
-        ctx.strokeStyle = '#ff3b3b';
+        ctx.strokeStyle = pin.color;
         ctx.lineWidth   = 1.2;
         ctx.setLineDash([3, 4]);
         ctx.beginPath();
@@ -479,11 +496,12 @@ function redraw() {
         if (!pos) continue;
         const isSelected = pin.id === selectedPinId;
         const r = isSelected ? 7 : 5;
+        const col = pin.color;
 
-        // Drop shadow
-        ctx.shadowColor   = '#ff3b3b';
-        ctx.shadowBlur    = isSelected ? 12 : 6;
-        ctx.fillStyle     = isSelected ? '#ff8888' : '#ff3b3b';
+        // Glow + fill
+        ctx.shadowColor = col;
+        ctx.shadowBlur  = isSelected ? 14 : 7;
+        ctx.fillStyle   = col;
         ctx.beginPath();
         ctx.arc(pos[0], pos[1], r, 0, Math.PI * 2);
         ctx.fill();
@@ -491,13 +509,34 @@ function redraw() {
 
         // White ring for selected
         if (isSelected) {
-            ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+            ctx.strokeStyle = 'rgba(255,255,255,0.65)';
             ctx.lineWidth   = 1.5;
             ctx.beginPath();
-            ctx.arc(pos[0], pos[1], r + 2, 0, Math.PI * 2);
+            ctx.arc(pos[0], pos[1], r + 2.5, 0, Math.PI * 2);
             ctx.stroke();
         }
     }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  PIN COLORS
+// ═══════════════════════════════════════════════════════════
+const PIN_COLORS = [
+    '#ff4d4d', // vivid red
+    '#ffb347', // vivid orange
+    '#ffe033', // vivid yellow
+    '#4dff91', // vivid green
+    '#33ddff', // vivid cyan
+    '#7b7bff', // vivid indigo
+    '#ff66cc', // vivid pink
+    '#ff8c1a', // vivid amber
+    '#00e5b0', // vivid teal
+    '#c77dff', // vivid violet
+];
+let pinColorIndex = 0;
+
+function nextPinColor() {
+    return PIN_COLORS[pinColorIndex++ % PIN_COLORS.length];
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -507,8 +546,9 @@ let pins = [], selectedPinId = null, pinIdCounter = 0;
 let currentTime = 0;
 
 function addPin(lat, lon, label) {
-    const id  = ++pinIdCounter;
-    const pin = { id, lat, lon, label: label || null, pastCoords: {}, screenPos: null };
+    const id    = ++pinIdCounter;
+    const color = nextPinColor();
+    const pin   = { id, lat, lon, label: label || null, color, pastCoords: {}, screenPos: null };
     pins.push(pin);
     positionPin(pin, currentTime);
     renderPinList();
@@ -524,12 +564,13 @@ function removePin(id) {
     if (selectedPinId === id) selectedPinId = null;
     redraw();
     renderPinList();
+    updateSubductionBanner();
     if (pins.length === 0) document.getElementById('clear-btn').style.display = 'none';
 }
 
 function clearAllPins() {
-    pins = []; selectedPinId = null;
-    redraw(); renderPinList();
+    pins = []; selectedPinId = null; pinColorIndex = 0;
+    redraw(); renderPinList(); updateSubductionBanner();
     document.getElementById('clear-btn').style.display = 'none';
 }
 
@@ -735,12 +776,14 @@ function renderPinList() {
         }
 
         const displayName = pin.label || `Pin ${pin.id}`;
+        const col  = pin.color;
         const item = document.createElement('div');
         item.className = 'pin-item' + (selectedPinId === pin.id ? ' selected' : '');
+        if (selectedPinId === pin.id) item.style.borderLeftColor = col;
         item.innerHTML = `
-            <div class="pin-dot${isNull ? ' hidden-pin' : ''}"></div>
+            <div class="pin-dot${isNull ? ' hidden-pin' : ''}" style="background:${isNull ? '' : col};box-shadow:${isNull ? 'none' : '0 0 5px ' + col}"></div>
             <div class="pin-coords">
-                <strong>${displayName}</strong>
+                <strong style="color:${col}">${displayName}</strong>
                 ${pin.lat.toFixed(2)}°, ${pin.lon.toFixed(2)}°
                 <div class="pin-past${isNull ? ' null-pos' : ''}">${pastStr}</div>
             </div>
@@ -750,6 +793,32 @@ function renderPinList() {
         item.addEventListener('click', () => { selectedPinId = pin.id; redraw(); renderPinList(); });
         list.appendChild(item);
     });
+}
+
+// ═══════════════════════════════════════════════════════════
+//  SUBDUCTION BANNER
+// ═══════════════════════════════════════════════════════════
+const bannerEl = document.getElementById('subduction-banner');
+
+function updateSubductionBanner() {
+    if (currentTime === 0) { bannerEl.classList.remove('visible'); return; }
+    const subducted = pins.filter(p => {
+        const c = p.pastCoords[currentTime];
+        return c !== undefined && (c === null || c[0] === null);
+    });
+    if (subducted.length === 0) { bannerEl.classList.remove('visible'); return; }
+
+    const rows = subducted.map(p => {
+        const name = p.label || `Pin ${p.id}`;
+        return `<div class="sub-row">
+            <div class="sub-swatch" style="background:${p.color}"></div>
+            <span class="sub-name" style="color:${p.color}">${name}</span>
+            <span class="sub-note">— this location was oceanic crust ${currentTime} Ma ago and has since subducted</span>
+        </div>`;
+    }).join('');
+
+    bannerEl.innerHTML = rows;
+    bannerEl.classList.add('visible');
 }
 
 // ═══════════════════════════════════════════════════════════
