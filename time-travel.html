@@ -234,9 +234,6 @@ const ANIM_STEP   = 10;   // Ma per animation step
 const ANIM_PAUSE  = 400;  // ms between steps (after load)
 const PREFETCH_AHEAD = 3; // how many steps to pre-fetch ahead of current
 
-// Trail sample times (every 50 Ma)
-const TRAIL_TIMES = Array.from({length: 21}, (_, i) => i * 50);
-
 const PRESETS = [
     { name: 'New York',   lat: 40.71,  lon: -74.01 },
     { name: 'London',     lat: 51.51,  lon: -0.13  },
@@ -472,24 +469,6 @@ function redraw() {
         ctx.globalAlpha = 1;
     }
 
-    // Trails
-    ctx.globalAlpha = 0.35;
-    for (const pin of pins) {
-        const trailPts = TRAIL_TIMES
-            .filter(t => t in pin.pastCoords && pin.pastCoords[t] && pin.pastCoords[t][0] !== null)
-            .map(t => lonLatToXY(pin.pastCoords[t][0], pin.pastCoords[t][1]));
-        if (trailPts.length < 2) continue;
-        ctx.strokeStyle = pin.color;
-        ctx.lineWidth   = 1.2;
-        ctx.setLineDash([3, 4]);
-        ctx.beginPath();
-        ctx.moveTo(...trailPts[0]);
-        for (let i = 1; i < trailPts.length; i++) ctx.lineTo(...trailPts[i]);
-        ctx.stroke();
-        ctx.setLineDash([]);
-    }
-    ctx.globalAlpha = 1;
-
     // Pins
     for (const pin of pins) {
         const pos = pin.screenPos;
@@ -553,7 +532,6 @@ function addPin(lat, lon, label) {
     positionPin(pin, currentTime);
     renderPinList();
     document.getElementById('clear-btn').style.display = 'block';
-    prefetchPinTrail(pin);
     return pin;
 }
 
@@ -606,30 +584,6 @@ async function reconstructAllPins(time) {
     }
     // Data is stored in pin.pastCoords[time] but screenPos is NOT updated here.
     // loadAndDisplay() is the only place that calls positionPin() + redraw().
-}
-
-async function prefetchPinTrail(pin) {
-    const needed = TRAIL_TIMES.filter(t => !(t in pin.pastCoords));
-    if (needed.length === 0) {
-        // Trail data already complete — redraw only if this pin is currently displayed
-        if (displayedTime >= 0) {
-            pins.forEach(p => positionPin(p, displayedTime));
-            redraw();
-        }
-        return;
-    }
-    await Promise.all(needed.map(async t => {
-        try {
-            const res  = await fetch(`${GWS_BASE}/reconstruct/reconstruct_points/?points=${pin.lon},${pin.lat}&time=${t}&model=${MODEL}&return_null_points=true`);
-            const data = await res.json();
-            pin.pastCoords[t] = (data.coordinates && data.coordinates[0]) || null;
-        } catch(e) { pin.pastCoords[t] = null; }
-    }));
-    // Only redraw using the currently-displayed time, not any in-flight time
-    if (displayedTime >= 0) {
-        pins.forEach(p => positionPin(p, displayedTime));
-        redraw();
-    }
 }
 
 // ═══════════════════════════════════════════════════════════
