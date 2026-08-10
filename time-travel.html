@@ -533,21 +533,23 @@ function clearAllPins() {
     document.getElementById('clear-btn').style.display = 'none';
 }
 
-// Set pin.screenPos from its pastCoords at the given time
+// Set pin.screenPos from its pastCoords at the given time.
+// ONLY called from loadAndDisplay — never call this directly from
+// reconstruction callbacks, to avoid pins moving before coastlines.
 function positionPin(pin, time) {
     const c = pin.pastCoords[time];
     if (c === undefined) {
-        // No data yet — show at present-day position as placeholder
+        // No data yet — keep showing present-day position as placeholder
         pin.screenPos = lonLatToXY(pin.lon, pin.lat);
     } else if (c === null || c[0] === null) {
-        pin.screenPos = null;  // subducted
+        pin.screenPos = null;  // subducted — hide pin
     } else {
         pin.screenPos = lonLatToXY(c[0], c[1]);
     }
 }
 
 // ═══════════════════════════════════════════════════════════
-//  RECONSTRUCTION
+//  RECONSTRUCTION  — stores data only, never touches screenPos
 // ═══════════════════════════════════════════════════════════
 async function reconstructAllPins(time) {
     if (pins.length === 0) return;
@@ -561,12 +563,20 @@ async function reconstructAllPins(time) {
             needed.forEach((pin, i) => { pin.pastCoords[time] = coords[i] || null; });
         } catch(e) { console.warn('Reconstruct error:', e); }
     }
-    // Note: we do NOT call positionPin here — that happens atomically in loadAndDisplay
+    // Data is stored in pin.pastCoords[time] but screenPos is NOT updated here.
+    // loadAndDisplay() is the only place that calls positionPin() + redraw().
 }
 
 async function prefetchPinTrail(pin) {
     const needed = TRAIL_TIMES.filter(t => !(t in pin.pastCoords));
-    if (needed.length === 0) { redraw(); return; }
+    if (needed.length === 0) {
+        // Trail data already complete — redraw only if this pin is currently displayed
+        if (displayedTime >= 0) {
+            pins.forEach(p => positionPin(p, displayedTime));
+            redraw();
+        }
+        return;
+    }
     await Promise.all(needed.map(async t => {
         try {
             const res  = await fetch(`${GWS_BASE}/reconstruct/reconstruct_points/?points=${pin.lon},${pin.lat}&time=${t}&model=${MODEL}&return_null_points=true`);
@@ -574,7 +584,11 @@ async function prefetchPinTrail(pin) {
             pin.pastCoords[t] = (data.coordinates && data.coordinates[0]) || null;
         } catch(e) { pin.pastCoords[t] = null; }
     }));
-    redraw();
+    // Only redraw using the currently-displayed time, not any in-flight time
+    if (displayedTime >= 0) {
+        pins.forEach(p => positionPin(p, displayedTime));
+        redraw();
+    }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -599,9 +613,15 @@ canvas.addEventListener('click', e => {
     const [lon, lat] = xyToLonLat(cx, cy);
     const pin = addPin(lat, lon);
     selectedPinId = pin.id;
+    // Fetch reconstruction data, then re-display atomically via loadAndDisplay
+    // so the pin only moves when the matching coastlines are also ready.
     reconstructAllPins(currentTime).then(() => {
-        positionPin(pin, currentTime);
-        redraw(); renderPinList();
+        // If the coastlines for currentTime are already cached, swap immediately;
+        // otherwise loadAndDisplay will do it when they arrive.
+        if (coastCache[currentTime]) {
+            pins.forEach(p => positionPin(p, displayedTime >= 0 ? displayedTime : currentTime));
+            redraw(); renderPinList();
+        }
     });
     showStatus(`Pin placed at ${lat.toFixed(2)}°, ${lon.toFixed(2)}°`, 2500);
     redraw();
@@ -676,8 +696,10 @@ PRESETS.forEach(p => {
         const pin = addPin(p.lat, p.lon, p.name);
         selectedPinId = pin.id;
         reconstructAllPins(currentTime).then(() => {
-            positionPin(pin, currentTime);
-            redraw(); renderPinList();
+            if (coastCache[currentTime]) {
+                pins.forEach(p => positionPin(p, displayedTime >= 0 ? displayedTime : currentTime));
+                redraw(); renderPinList();
+            }
         });
         showStatus(`Pin placed: ${p.name}`, 2500);
         redraw();
