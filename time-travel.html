@@ -1,0 +1,723 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tectonic Time Travel</title>
+    <style>
+        :root {
+            --bg: #000;
+            --bg-raised: #0a0a0f;
+            --bg-card: #111118;
+            --text: #e8e8e8;
+            --text-muted: #888;
+            --text-dim: #555;
+            --accent: #4a9eff;
+            --accent-dim: #2a5a99;
+            --red: #ff3b3b;
+            --red-dim: #8b1a1a;
+            --border: #222;
+            --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg); }
+        body { font-family: var(--font); color: var(--text); -webkit-font-smoothing: antialiased; display: flex; flex-direction: column; }
+
+        /* ── Top bar ── */
+        #topbar {
+            flex-shrink: 0; display: flex; align-items: center; gap: 1rem;
+            padding: 0.6rem 1.2rem; background: var(--bg-raised);
+            border-bottom: 1px solid var(--border); z-index: 10;
+        }
+        #topbar a { color: var(--text-dim); text-decoration: none; font-size: 0.75rem; letter-spacing: 0.05em; transition: color 0.2s; }
+        #topbar a:hover { color: var(--accent); }
+        #topbar h1 { font-size: 0.9rem; font-weight: 400; letter-spacing: 0.12em; text-transform: uppercase; }
+        #topbar .sep { color: var(--text-dim); }
+
+        /* ── Main ── */
+        #main { flex: 1; display: flex; min-height: 0; }
+
+        /* ── Globe ── */
+        #globe-wrap { flex: 1; position: relative; cursor: crosshair; }
+        #globe-wrap canvas { display: block; width: 100% !important; height: 100% !important; }
+
+        /* ── Sidebar ── */
+        #sidebar {
+            width: 280px; flex-shrink: 0; background: var(--bg-raised);
+            border-left: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden;
+        }
+        .sidebar-section { padding: 1rem 1.1rem; border-bottom: 1px solid var(--border); }
+        .sidebar-section h2 {
+            font-size: 0.7rem; font-weight: 500; letter-spacing: 0.12em;
+            text-transform: uppercase; color: var(--text-dim); margin-bottom: 0.75rem;
+        }
+
+        /* ── Time display ── */
+        #time-display { font-size: 1.6rem; font-weight: 300; letter-spacing: 0.04em; margin-bottom: 0.2rem; }
+        #time-display span { font-size: 0.75rem; color: var(--text-muted); font-weight: 400; letter-spacing: 0.08em; }
+        #era-label { font-size: 0.75rem; color: var(--accent); margin-bottom: 0.9rem; min-height: 1em; }
+
+        /* ── Slider ── */
+        #time-slider {
+            -webkit-appearance: none; appearance: none; width: 100%; height: 3px;
+            background: var(--border); border-radius: 2px; outline: none; cursor: pointer; margin-bottom: 0.5rem;
+        }
+        #time-slider::-webkit-slider-thumb {
+            -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%;
+            background: var(--accent); cursor: pointer; box-shadow: 0 0 6px var(--accent);
+        }
+        #time-slider::-moz-range-thumb {
+            width: 14px; height: 14px; border-radius: 50%; background: var(--accent);
+            cursor: pointer; border: none; box-shadow: 0 0 6px var(--accent);
+        }
+        .slider-labels { display: flex; justify-content: space-between; font-size: 0.65rem; color: var(--text-dim); }
+
+        /* ── Buttons ── */
+        .btn {
+            width: 100%; padding: 0.45rem 0; background: none; border: 1px solid var(--border);
+            color: var(--text-muted); font-family: var(--font); font-size: 0.78rem;
+            letter-spacing: 0.08em; border-radius: 3px; cursor: pointer; transition: all 0.2s; margin-top: 0.5rem;
+        }
+        .btn:hover { border-color: var(--text-muted); color: var(--text); }
+        .btn-accent { border-color: var(--accent-dim); color: var(--accent); }
+        .btn-accent:hover { background: var(--accent-dim); color: var(--text); }
+        .btn-accent.playing { border-color: var(--red-dim); color: var(--red); }
+        .btn-accent.playing:hover { background: var(--red-dim); color: var(--text); }
+
+        /* ── Preset cities ── */
+        .preset-grid {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 0.35rem; margin-top: 0.1rem;
+        }
+        .preset-btn {
+            background: var(--bg-card); border: 1px solid var(--border); color: var(--text-muted);
+            font-family: var(--font); font-size: 0.7rem; padding: 0.3rem 0.4rem; border-radius: 3px;
+            cursor: pointer; transition: all 0.15s; text-align: left; line-height: 1.3;
+        }
+        .preset-btn:hover { border-color: var(--accent-dim); color: var(--text); background: var(--bg-raised); }
+        .preset-btn strong { display: block; font-size: 0.72rem; color: var(--text); font-weight: 500; }
+
+        /* ── Instructions ── */
+        .instruction { font-size: 0.78rem; color: var(--text-muted); line-height: 1.6; }
+        .instruction .key {
+            display: inline-block; background: var(--bg-card); border: 1px solid var(--border);
+            border-radius: 3px; padding: 0 0.3em; font-size: 0.7rem; color: var(--text); font-family: monospace;
+        }
+        .note { font-size: 0.7rem; color: var(--text-dim); line-height: 1.5; margin-top: 0.6rem; font-style: italic; }
+
+        /* ── Pin list ── */
+        #pin-list-wrap { flex: 1; overflow-y: auto; padding: 0.5rem 0; }
+        #pin-list-wrap::-webkit-scrollbar { width: 4px; }
+        #pin-list-wrap::-webkit-scrollbar-track { background: transparent; }
+        #pin-list-wrap::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+        .pin-item {
+            display: flex; align-items: flex-start; gap: 0.6rem; padding: 0.55rem 1.1rem;
+            cursor: pointer; transition: background 0.15s; border-left: 2px solid transparent;
+        }
+        .pin-item:hover { background: var(--bg-card); }
+        .pin-item.selected { border-left-color: var(--red); background: var(--bg-card); }
+        .pin-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--red); flex-shrink: 0; margin-top: 3px; box-shadow: 0 0 5px var(--red); }
+        .pin-dot.hidden-pin { background: var(--text-dim); box-shadow: none; }
+        .pin-coords { font-size: 0.72rem; color: var(--text-muted); line-height: 1.5; }
+        .pin-coords strong { display: block; font-size: 0.78rem; color: var(--text); font-weight: 400; margin-bottom: 0.1rem; }
+        .pin-past { font-size: 0.68rem; color: var(--accent); }
+        .pin-past.null-pos { color: var(--text-dim); font-style: italic; }
+        .pin-remove { margin-left: auto; background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 0.9rem; padding: 0 0.1rem; line-height: 1; transition: color 0.15s; flex-shrink: 0; }
+        .pin-remove:hover { color: var(--red); }
+        .no-pins { padding: 1.5rem 1.1rem; font-size: 0.78rem; color: var(--text-dim); font-style: italic; }
+
+        /* ── Status ── */
+        #status {
+            position: absolute; bottom: 1rem; left: 50%; transform: translateX(-50%);
+            background: rgba(10,10,15,0.88); border: 1px solid var(--border); border-radius: 4px;
+            padding: 0.4rem 0.9rem; font-size: 0.75rem; color: var(--text-muted);
+            pointer-events: none; opacity: 0; transition: opacity 0.3s; white-space: nowrap;
+        }
+        #status.visible { opacity: 1; }
+
+        /* ── Spinner ── */
+        .spinner {
+            display: inline-block; width: 10px; height: 10px; border: 1.5px solid var(--text-dim);
+            border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite;
+            vertical-align: middle; margin-right: 0.3em;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* ── Mobile ── */
+        @media (max-width: 600px) { #sidebar { width: 220px; } #time-display { font-size: 1.2rem; } }
+    </style>
+</head>
+<body>
+
+<div id="topbar">
+    <a href="index.html">&#8592; Tectonic Globe</a>
+    <span class="sep">/</span>
+    <h1>Time Travel</h1>
+</div>
+
+<div id="main">
+    <div id="globe-wrap">
+        <canvas id="globe-canvas"></canvas>
+        <div id="status"></div>
+    </div>
+
+    <div id="sidebar">
+        <!-- Time control -->
+        <div class="sidebar-section">
+            <h2>Geological Time</h2>
+            <div id="time-display">0 <span>Ma</span></div>
+            <div id="era-label">Present day</div>
+            <input type="range" id="time-slider" min="0" max="1000" step="1" value="0">
+            <div class="slider-labels"><span>Present</span><span>500 Ma</span><span>1000 Ma</span></div>
+            <button id="animate-btn" class="btn btn-accent">&#9654; Animate through time</button>
+        </div>
+
+        <!-- Quick-add cities -->
+        <div class="sidebar-section">
+            <h2>Quick-add a city</h2>
+            <div class="preset-grid" id="preset-grid"></div>
+        </div>
+
+        <!-- Instructions -->
+        <div class="sidebar-section">
+            <h2>How to use</h2>
+            <p class="instruction">
+                <strong style="color:var(--text);display:block;margin-bottom:0.3rem;">Click the globe</strong>
+                to drop a pin. Drag the time slider to watch it drift back through tectonic history.
+            </p>
+            <p class="instruction" style="margin-top:0.5rem;">
+                <span class="key">drag</span> to rotate &nbsp; <span class="key">scroll</span> to zoom
+            </p>
+            <p class="note">Pins on oceanic crust show "outside range" at deep time — that crust has since subducted. Place pins on continents for best results.</p>
+        </div>
+
+        <!-- Pin list -->
+        <div class="sidebar-section" style="border-bottom:none;padding-bottom:0.25rem;display:flex;align-items:center;justify-content:space-between;">
+            <h2 style="margin-bottom:0;">Pins</h2>
+            <button id="clear-btn" class="btn" style="width:auto;padding:0.2rem 0.6rem;margin-top:0;font-size:0.7rem;display:none;">Clear all</button>
+        </div>
+        <div id="pin-list-wrap">
+            <div class="no-pins" id="no-pins-msg">No pins yet.</div>
+            <div id="pin-list"></div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ═══════════════════════════════════════════════════════════
+//  CONFIG
+// ═══════════════════════════════════════════════════════════
+const GWS_BASE    = 'https://gws.gplates.org';
+const MODEL       = 'MERDITH2021';
+const GLOBE_R     = 1.0;
+const PIN_R       = 0.016;
+const TRAIL_TIMES = [0,50,100,150,200,250,300,350,400,450,500,550,600,650,700,750,800,850,900,950,1000];
+
+const PRESETS = [
+    { name: 'New York',   lat: 40.71,  lon: -74.01 },
+    { name: 'London',     lat: 51.51,  lon: -0.13  },
+    { name: 'Cairo',      lat: 30.04,  lon: 31.24  },
+    { name: 'Mumbai',     lat: 19.08,  lon: 72.88  },
+    { name: 'Sydney',     lat: -33.87, lon: 151.21 },
+    { name: 'São Paulo',  lat: -23.55, lon: -46.63 },
+    { name: 'Beijing',    lat: 39.91,  lon: 116.39 },
+    { name: 'Cape Town',  lat: -33.93, lon: 18.42  },
+    { name: 'Moscow',     lat: 55.75,  lon: 37.62  },
+    { name: 'Toronto',    lat: 43.65,  lon: -79.38 },
+];
+
+const ERAS = [
+    { max:2.6,  min:0,    name:'Quaternary' },
+    { max:23,   min:2.6,  name:'Neogene' },
+    { max:66,   min:23,   name:'Paleogene' },
+    { max:145,  min:66,   name:'Cretaceous' },
+    { max:201,  min:145,  name:'Jurassic' },
+    { max:252,  min:201,  name:'Triassic' },
+    { max:299,  min:252,  name:'Permian' },
+    { max:359,  min:299,  name:'Carboniferous' },
+    { max:419,  min:359,  name:'Devonian' },
+    { max:444,  min:419,  name:'Silurian' },
+    { max:485,  min:444,  name:'Ordovician' },
+    { max:541,  min:485,  name:'Cambrian' },
+    { max:1000, min:541,  name:'Precambrian' },
+];
+function getEraName(ma) {
+    if (ma === 0) return 'Present day';
+    for (const e of ERAS) if (ma > e.min && ma <= e.max) return e.name;
+    return 'Precambrian';
+}
+
+// ═══════════════════════════════════════════════════════════
+//  THREE.JS SCENE
+// ═══════════════════════════════════════════════════════════
+const canvas   = document.getElementById('globe-canvas');
+const wrap     = document.getElementById('globe-wrap');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setClearColor(0x000000, 1);
+
+const scene  = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 100);
+camera.position.set(0, 0, 2.8);
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+const sun = new THREE.DirectionalLight(0xffffff, 1.0);
+sun.position.set(5, 3, 5);
+scene.add(sun);
+
+const globeGroup = new THREE.Group();
+scene.add(globeGroup);
+
+const oceanMesh = new THREE.Mesh(
+    new THREE.SphereGeometry(GLOBE_R, 64, 64),
+    new THREE.MeshPhongMaterial({ color: 0x1a425a, shininess: 18 })
+);
+globeGroup.add(oceanMesh);
+
+globeGroup.add(new THREE.Mesh(
+    new THREE.SphereGeometry(GLOBE_R * 1.025, 32, 32),
+    new THREE.MeshPhongMaterial({ color: 0x4a9eff, transparent: true, opacity: 0.05, side: THREE.BackSide })
+));
+
+const continentGroup = new THREE.Group();
+globeGroup.add(continentGroup);
+const pinGroup = new THREE.Group();
+globeGroup.add(pinGroup);
+const trailGroup = new THREE.Group();
+globeGroup.add(trailGroup);
+
+function resize() {
+    const w = wrap.clientWidth, h = wrap.clientHeight;
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ═══════════════════════════════════════════════════════════
+//  ORBIT CONTROLS
+// ═══════════════════════════════════════════════════════════
+let isDragging = false, dragDelta = 0;
+let prevMouse  = { x: 0, y: 0 };
+let rotX = 0, rotY = 0, zoom = 2.8;
+
+canvas.addEventListener('mousedown', e => {
+    dragDelta = 0;
+    prevMouse = { x: e.clientX, y: e.clientY };
+    const onMove = ev => {
+        const dx = ev.clientX - prevMouse.x, dy = ev.clientY - prevMouse.y;
+        dragDelta += Math.abs(dx) + Math.abs(dy);
+        if (dragDelta > 3) isDragging = true;
+        rotY += dx * 0.005; rotX += dy * 0.005;
+        rotX = Math.max(-Math.PI/2, Math.min(Math.PI/2, rotX));
+        globeGroup.rotation.set(rotX, rotY, 0);
+        prevMouse = { x: ev.clientX, y: ev.clientY };
+    };
+    const onUp = ev => {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+        if (!isDragging) handleGlobeClick(ev);
+        isDragging = false;
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+});
+
+canvas.addEventListener('wheel', e => {
+    zoom = Math.max(1.3, Math.min(6, zoom + e.deltaY * 0.005));
+    camera.position.z = zoom;
+    e.preventDefault();
+}, { passive: false });
+
+let touchStart = null;
+canvas.addEventListener('touchstart', e => {
+    if (e.touches.length === 1) { touchStart = { x: e.touches[0].clientX, y: e.touches[0].clientY }; dragDelta = 0; isDragging = false; }
+}, { passive: true });
+canvas.addEventListener('touchmove', e => {
+    if (e.touches.length === 1 && touchStart) {
+        const dx = e.touches[0].clientX - touchStart.x, dy = e.touches[0].clientY - touchStart.y;
+        dragDelta += Math.abs(dx) + Math.abs(dy);
+        if (dragDelta > 5) isDragging = true;
+        rotY += dx * 0.005; rotX += dy * 0.005;
+        rotX = Math.max(-Math.PI/2, Math.min(Math.PI/2, rotX));
+        globeGroup.rotation.set(rotX, rotY, 0);
+        touchStart = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    }
+    e.preventDefault();
+}, { passive: false });
+canvas.addEventListener('touchend', e => {
+    if (!isDragging && touchStart) handleGlobeClick({ clientX: touchStart.x, clientY: touchStart.y });
+    touchStart = null;
+}, { passive: true });
+
+// ═══════════════════════════════════════════════════════════
+//  GEO HELPERS
+// ═══════════════════════════════════════════════════════════
+function latLonToVec3(lat, lon, r) {
+    const phi   = (90 - lat)  * Math.PI / 180;
+    const theta = (lon + 180) * Math.PI / 180;
+    return new THREE.Vector3(
+        -r * Math.sin(phi) * Math.cos(theta),
+         r * Math.cos(phi),
+         r * Math.sin(phi) * Math.sin(theta)
+    );
+}
+function vec3ToLatLon(v) {
+    const r   = v.length();
+    const lat = 90 - Math.acos(Math.max(-1, Math.min(1, v.y / r))) * 180 / Math.PI;
+    const lon = Math.atan2(v.z, -v.x) * 180 / Math.PI - 180;
+    return { lat, lon: ((lon + 540) % 360) - 180 };
+}
+
+// ═══════════════════════════════════════════════════════════
+//  COASTLINES
+// ═══════════════════════════════════════════════════════════
+const coastlineCache = {};
+let currentCoastlineTime = -1;
+
+async function fetchCoastlines(time) {
+    if (coastlineCache[time]) return coastlineCache[time];
+    const res = await fetch(`${GWS_BASE}/reconstruct/coastlines/?time=${time}&model=${MODEL}&fmt=geojson`);
+    const gj  = await res.json();
+    const grp = new THREE.Group();
+    const mat = new THREE.LineBasicMaterial({ color: 0xa07c5a, opacity: 0.9, transparent: true });
+    for (const feat of gj.features) {
+        const geom  = feat.geometry;
+        const rings = geom.type === 'Polygon' ? geom.coordinates : geom.type === 'MultiPolygon' ? geom.coordinates.flat() : [];
+        for (const ring of rings) {
+            const pts = ring.map(([lon, lat]) => latLonToVec3(lat, lon, GLOBE_R * 1.001));
+            if (pts.length >= 2) grp.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat));
+        }
+    }
+    coastlineCache[time] = grp;
+    return grp;
+}
+
+async function updateCoastlines(time) {
+    if (time === currentCoastlineTime) return;
+    currentCoastlineTime = time;
+    showStatus('<span class="spinner"></span> Loading coastlines…');
+    continentGroup.clear();
+    continentGroup.add(await fetchCoastlines(time));
+    hideStatus();
+}
+
+// ═══════════════════════════════════════════════════════════
+//  PINS
+// ═══════════════════════════════════════════════════════════
+let pins = [], selectedPinId = null, pinIdCounter = 0, currentTime = 0;
+
+const PIN_MAT     = new THREE.MeshPhongMaterial({ color: 0xff3b3b, emissive: 0x550000, shininess: 60 });
+const PIN_SEL_MAT = new THREE.MeshPhongMaterial({ color: 0xff8888, emissive: 0x993333, shininess: 80 });
+const PIN_GEO     = new THREE.SphereGeometry(PIN_R, 12, 12);
+
+function addPin(lat, lon, label) {
+    const id   = ++pinIdCounter;
+    const mesh = new THREE.Mesh(PIN_GEO, PIN_MAT.clone());
+    mesh.userData.pinId = id;
+    pinGroup.add(mesh);
+    const pin = { id, lat, lon, label: label || null, mesh, pastCoords: {} };
+    pins.push(pin);
+    positionPinMesh(pin, currentTime);
+    renderPinList();
+    document.getElementById('clear-btn').style.display = 'block';
+    prefetchTrail(pin);
+    return pin;
+}
+
+function removePin(id) {
+    const idx = pins.findIndex(p => p.id === id);
+    if (idx === -1) return;
+    pinGroup.remove(pins[idx].mesh);
+    pins.splice(idx, 1);
+    if (selectedPinId === id) selectedPinId = null;
+    rebuildTrails();
+    renderPinList();
+    if (pins.length === 0) document.getElementById('clear-btn').style.display = 'none';
+}
+
+function clearAllPins() {
+    pins.forEach(p => pinGroup.remove(p.mesh));
+    pins = []; selectedPinId = null;
+    trailGroup.clear(); renderPinList();
+    document.getElementById('clear-btn').style.display = 'none';
+}
+
+function positionPinMesh(pin, time) {
+    const c = pin.pastCoords[time];
+    if (c === undefined) {
+        pin.mesh.position.copy(latLonToVec3(pin.lat, pin.lon, GLOBE_R * 1.014));
+        pin.mesh.visible = true; return;
+    }
+    if (c === null || c[0] === null) { pin.mesh.visible = false; return; }
+    pin.mesh.position.copy(latLonToVec3(c[1], c[0], GLOBE_R * 1.014));
+    pin.mesh.visible = true;
+}
+
+// ═══════════════════════════════════════════════════════════
+//  RECONSTRUCTION
+// ═══════════════════════════════════════════════════════════
+async function reconstructAllPins(time) {
+    if (pins.length === 0) return;
+    const needed = pins.filter(p => !(time in p.pastCoords));
+    if (needed.length > 0) {
+        const pts = needed.map(p => `${p.lon},${p.lat}`).join(',');
+        try {
+            const res  = await fetch(`${GWS_BASE}/reconstruct/reconstruct_points/?points=${pts}&time=${time}&model=${MODEL}&return_null_points=true`);
+            const data = await res.json();
+            const coords = data.coordinates || [];
+            needed.forEach((pin, i) => { pin.pastCoords[time] = coords[i] || null; });
+        } catch(e) { console.warn('Reconstruct error:', e); }
+    }
+    pins.forEach(p => positionPinMesh(p, time));
+    renderPinList();
+}
+
+async function prefetchTrail(pin) {
+    const needed = TRAIL_TIMES.filter(t => !(t in pin.pastCoords));
+    if (needed.length === 0) { buildTrailForPin(pin); return; }
+    await Promise.all(needed.map(async t => {
+        try {
+            const res  = await fetch(`${GWS_BASE}/reconstruct/reconstruct_points/?points=${pin.lon},${pin.lat}&time=${t}&model=${MODEL}&return_null_points=true`);
+            const data = await res.json();
+            pin.pastCoords[t] = (data.coordinates && data.coordinates[0]) || null;
+        } catch(e) { pin.pastCoords[t] = null; }
+    }));
+    buildTrailForPin(pin);
+}
+
+// ═══════════════════════════════════════════════════════════
+//  TRAILS
+// ═══════════════════════════════════════════════════════════
+function buildTrailForPin(pin) {
+    trailGroup.children.filter(c => c.userData.pinId === pin.id).forEach(c => trailGroup.remove(c));
+    const pts = Object.keys(pin.pastCoords).map(Number).filter(t => t >= 0 && t <= 1000).sort((a,b) => a-b)
+        .map(t => { const c = pin.pastCoords[t]; return c && c[0] !== null ? latLonToVec3(c[1], c[0], GLOBE_R * 1.006) : null; })
+        .filter(Boolean);
+    if (pts.length < 2) return;
+    const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
+        new THREE.LineBasicMaterial({ color: 0xff3b3b, opacity: 0.28, transparent: true }));
+    line.userData.pinId = pin.id;
+    trailGroup.add(line);
+}
+function rebuildTrails() { trailGroup.clear(); pins.forEach(p => buildTrailForPin(p)); }
+
+// ═══════════════════════════════════════════════════════════
+//  CLICK HANDLER
+// ═══════════════════════════════════════════════════════════
+const raycaster = new THREE.Raycaster();
+const mouse2    = new THREE.Vector2();
+
+function handleGlobeClick(e) {
+    const rect = canvas.getBoundingClientRect();
+    mouse2.x =  ((e.clientX - rect.left) / rect.width)  * 2 - 1;
+    mouse2.y = -((e.clientY - rect.top)  / rect.height) * 2 + 1;
+    raycaster.setFromCamera(mouse2, camera);
+
+    const pinHits = raycaster.intersectObjects(pins.map(p => p.mesh));
+    if (pinHits.length > 0) {
+        selectedPinId = pinHits[0].object.userData.pinId;
+        renderPinList(); return;
+    }
+
+    const hits = raycaster.intersectObject(oceanMesh);
+    if (hits.length === 0) return;
+
+    const localPt = globeGroup.worldToLocal(hits[0].point.clone());
+    const { lat, lon } = vec3ToLatLon(localPt);
+    const pin = addPin(lat, lon);
+    selectedPinId = pin.id;
+    reconstructAllPins(currentTime);
+    showStatus(`Pin placed at ${lat.toFixed(2)}°, ${lon.toFixed(2)}°`, 2500);
+}
+
+// ═══════════════════════════════════════════════════════════
+//  TIME SLIDER
+// ═══════════════════════════════════════════════════════════
+const slider      = document.getElementById('time-slider');
+const timeDisplay = document.getElementById('time-display');
+const eraLabel    = document.getElementById('era-label');
+let reconstructTimer = null;
+
+slider.addEventListener('input', () => {
+    currentTime = parseInt(slider.value);
+    updateTimeDisplay(currentTime);
+    clearTimeout(reconstructTimer);
+    reconstructTimer = setTimeout(async () => {
+        await Promise.all([updateCoastlines(currentTime), reconstructAllPins(currentTime)]);
+        rebuildTrails();
+    }, 100);
+});
+
+function updateTimeDisplay(ma) {
+    timeDisplay.innerHTML = `${ma} <span>Ma</span>`;
+    eraLabel.textContent  = getEraName(ma);
+}
+
+function setTime(t) {
+    currentTime = t;
+    slider.value = t;
+    updateTimeDisplay(t);
+    clearTimeout(reconstructTimer);
+    reconstructTimer = setTimeout(async () => {
+        await Promise.all([updateCoastlines(t), reconstructAllPins(t)]);
+        rebuildTrails();
+    }, 100);
+}
+
+// ═══════════════════════════════════════════════════════════
+//  ANIMATE
+// ═══════════════════════════════════════════════════════════
+const animBtn = document.getElementById('animate-btn');
+let animInterval = null, animDir = 1;
+
+animBtn.addEventListener('click', () => {
+    if (animInterval) {
+        clearInterval(animInterval); animInterval = null;
+        animBtn.innerHTML = '&#9654; Animate through time';
+        animBtn.classList.remove('playing');
+    } else {
+        animBtn.innerHTML = '&#9646;&#9646; Stop';
+        animBtn.classList.add('playing');
+        animInterval = setInterval(async () => {
+            let t = currentTime + animDir * 5;
+            if (t >= 1000) { t = 1000; animDir = -1; }
+            if (t <= 0)    { t = 0;    animDir =  1; }
+            setTime(t);
+        }, 200);
+    }
+});
+
+// ═══════════════════════════════════════════════════════════
+//  PRESET CITIES
+// ═══════════════════════════════════════════════════════════
+const presetGrid = document.getElementById('preset-grid');
+PRESETS.forEach(p => {
+    const btn = document.createElement('button');
+    btn.className = 'preset-btn';
+    btn.innerHTML = `<strong>${p.name}</strong>${p.lat.toFixed(1)}°, ${p.lon.toFixed(1)}°`;
+    btn.addEventListener('click', () => {
+        const pin = addPin(p.lat, p.lon, p.name);
+        selectedPinId = pin.id;
+        reconstructAllPins(currentTime);
+        spinToLatLon(p.lat, p.lon);
+        showStatus(`Pin placed: ${p.name}`, 2500);
+    });
+    presetGrid.appendChild(btn);
+});
+
+// ═══════════════════════════════════════════════════════════
+//  CLEAR ALL
+// ═══════════════════════════════════════════════════════════
+document.getElementById('clear-btn').addEventListener('click', clearAllPins);
+
+// ═══════════════════════════════════════════════════════════
+//  PIN LIST UI
+// ═══════════════════════════════════════════════════════════
+function renderPinList() {
+    const list  = document.getElementById('pin-list');
+    const noMsg = document.getElementById('no-pins-msg');
+    noMsg.style.display = pins.length === 0 ? 'block' : 'none';
+    list.innerHTML = '';
+
+    pins.forEach(pin => {
+        const c = pin.pastCoords[currentTime];
+        let pastStr, isNull = false;
+        if (c === undefined) {
+            pastStr = 'Fetching…';
+        } else if (c === null || c[0] === null) {
+            pastStr = 'Oceanic crust — subducted';
+            isNull  = true;
+        } else {
+            const label = currentTime === 0 ? 'Present' : `${currentTime} Ma`;
+            pastStr = `${label}: ${c[1].toFixed(1)}°, ${c[0].toFixed(1)}°`;
+        }
+
+        const displayName = pin.label || `Pin ${pin.id}`;
+        const coordStr    = `${pin.lat.toFixed(2)}°, ${pin.lon.toFixed(2)}°`;
+
+        const item = document.createElement('div');
+        item.className = 'pin-item' + (selectedPinId === pin.id ? ' selected' : '');
+        item.innerHTML = `
+            <div class="pin-dot${isNull ? ' hidden-pin' : ''}"></div>
+            <div class="pin-coords">
+                <strong>${displayName}</strong>
+                ${coordStr}
+                <div class="pin-past${isNull ? ' null-pos' : ''}">${pastStr}</div>
+            </div>
+            <button class="pin-remove" title="Remove pin">&#215;</button>
+        `;
+        item.querySelector('.pin-remove').addEventListener('click', ev => { ev.stopPropagation(); removePin(pin.id); });
+        item.addEventListener('click', () => {
+            selectedPinId = pin.id; renderPinList();
+            const coord = pin.pastCoords[currentTime];
+            if (coord && coord[0] !== null) spinToLatLon(coord[1], coord[0]);
+            else spinToLatLon(pin.lat, pin.lon);
+        });
+        list.appendChild(item);
+    });
+
+    pins.forEach(p => { p.mesh.material = (selectedPinId === p.id ? PIN_SEL_MAT : PIN_MAT).clone(); });
+}
+
+// ═══════════════════════════════════════════════════════════
+//  SPIN TO LAT/LON
+// ═══════════════════════════════════════════════════════════
+function spinToLatLon(lat, lon) {
+    const tY = -(lon * Math.PI / 180), tX = -(lat * Math.PI / 180) * 0.45;
+    const sY = rotY, sX = rotX;
+    let f = 0;
+    const step = () => {
+        f++;
+        const t = Math.min(f / 25, 1);
+        const ease = t < 0.5 ? 2*t*t : -1+(4-2*t)*t;
+        rotY = sY + (tY - sY) * ease;
+        rotX = sX + (tX - sX) * ease;
+        globeGroup.rotation.set(rotX, rotY, 0);
+        if (t < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+}
+
+// ═══════════════════════════════════════════════════════════
+//  RENDER LOOP
+// ═══════════════════════════════════════════════════════════
+function animate() {
+    requestAnimationFrame(animate);
+    // Hide pins on back hemisphere
+    pins.forEach(pin => {
+        if (!pin.mesh.visible) return;
+        const wp = new THREE.Vector3();
+        pin.mesh.getWorldPosition(wp);
+        const toCam  = new THREE.Vector3().subVectors(camera.position, wp).normalize();
+        pin.mesh.visible = toCam.dot(wp.clone().normalize()) > 0.05;
+    });
+    renderer.render(scene, camera);
+}
+animate();
+
+// ═══════════════════════════════════════════════════════════
+//  STATUS
+// ═══════════════════════════════════════════════════════════
+let statusTimer = null;
+const statusEl  = document.getElementById('status');
+function showStatus(html, autohide) {
+    statusEl.innerHTML = html; statusEl.classList.add('visible');
+    if (statusTimer) clearTimeout(statusTimer);
+    if (autohide) statusTimer = setTimeout(hideStatus, autohide);
+}
+function hideStatus() { statusEl.classList.remove('visible'); }
+
+// ═══════════════════════════════════════════════════════════
+//  INIT
+// ═══════════════════════════════════════════════════════════
+(async () => {
+    showStatus('<span class="spinner"></span> Loading present-day coastlines…');
+    await updateCoastlines(0);
+    hideStatus();
+})();
+</script>
+</body>
+</html>
