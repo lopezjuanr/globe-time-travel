@@ -376,10 +376,15 @@ function vec3ToLatLon(v) {
 // ═══════════════════════════════════════════════════════════
 const coastlineCache = {};
 let currentCoastlineTime = -1;
+let coastlineAbortCtrl   = null;   // cancel in-flight fetch when time changes
+let coastlineInflight    = null;   // promise for the currently-loading time
 
-async function fetchCoastlines(time) {
+async function fetchCoastlines(time, signal) {
     if (coastlineCache[time]) return coastlineCache[time];
-    const res = await fetch(`${GWS_BASE}/reconstruct/coastlines/?time=${time}&model=${MODEL}&fmt=geojson`);
+    const res = await fetch(
+        `${GWS_BASE}/reconstruct/coastlines/?time=${time}&model=${MODEL}&fmt=geojson`,
+        { signal }
+    );
     const gj  = await res.json();
     const grp = new THREE.Group();
     const mat = new THREE.LineBasicMaterial({ color: 0xa07c5a, opacity: 0.9, transparent: true });
@@ -397,11 +402,25 @@ async function fetchCoastlines(time) {
 
 async function updateCoastlines(time) {
     if (time === currentCoastlineTime) return;
+    // Cancel any in-flight request for a different time
+    if (coastlineAbortCtrl) { coastlineAbortCtrl.abort(); coastlineAbortCtrl = null; }
     currentCoastlineTime = time;
     showStatus('<span class="spinner"></span> Loading coastlines…');
-    continentGroup.clear();
-    continentGroup.add(await fetchCoastlines(time));
-    hideStatus();
+    const ctrl = new AbortController();
+    coastlineAbortCtrl = ctrl;
+    try {
+        const grp = await fetchCoastlines(time, ctrl.signal);
+        // Only apply if this is still the requested time (not superseded)
+        if (currentCoastlineTime === time) {
+            continentGroup.clear();
+            continentGroup.add(grp);
+            hideStatus();
+        }
+    } catch(e) {
+        if (e.name !== 'AbortError') console.warn('Coastline fetch error:', e);
+    } finally {
+        if (coastlineAbortCtrl === ctrl) coastlineAbortCtrl = null;
+    }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -568,25 +587,40 @@ function setTime(t) {
 }
 
 // ═══════════════════════════════════════════════════════════
-//  ANIMATE
+//  ANIMATE  — step-and-wait: advance only after coastlines load
 // ═══════════════════════════════════════════════════════════
 const animBtn = document.getElementById('animate-btn');
-let animInterval = null, animDir = 1;
+let animRunning = false, animDir = 1;
+
+async function animLoop() {
+    while (animRunning) {
+        let t = currentTime + animDir * 10;
+        if (t >= 1000) { t = 1000; animDir = -1; }
+        if (t <= 0)    { t = 0;    animDir =  1; }
+        currentTime = t;
+        slider.value = t;
+        updateTimeDisplay(t);
+        // Wait for both coastlines AND pin reconstruction before next step
+        await Promise.all([
+            updateCoastlines(t),
+            reconstructAllPins(t)
+        ]);
+        rebuildTrails();
+        // Pause between frames so the user can see each position
+        await new Promise(r => setTimeout(r, 600));
+    }
+}
 
 animBtn.addEventListener('click', () => {
-    if (animInterval) {
-        clearInterval(animInterval); animInterval = null;
+    if (animRunning) {
+        animRunning = false;
         animBtn.innerHTML = '&#9654; Animate through time';
         animBtn.classList.remove('playing');
     } else {
+        animRunning = true;
         animBtn.innerHTML = '&#9646;&#9646; Stop';
         animBtn.classList.add('playing');
-        animInterval = setInterval(async () => {
-            let t = currentTime + animDir * 5;
-            if (t >= 1000) { t = 1000; animDir = -1; }
-            if (t <= 0)    { t = 0;    animDir =  1; }
-            setTime(t);
-        }, 200);
+        animLoop();
     }
 });
 
