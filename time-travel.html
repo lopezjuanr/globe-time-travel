@@ -42,6 +42,8 @@
             flex: 1; position: relative; overflow: hidden; cursor: crosshair;
             background: #0d1f2d;
         }
+        /* While animating, pin placement is disabled — signal it via the cursor. */
+        #map-wrap.locked { cursor: not-allowed; }
         #map-canvas { display: block; position: absolute; top: 0; left: 0; }
 
         /* ── Sidebar ── */
@@ -96,6 +98,20 @@
         }
         .preset-btn:hover { border-color: var(--accent-dim); color: var(--text); background: var(--bg-raised); }
         .preset-btn strong { display: block; font-size: 0.72rem; color: var(--text); font-weight: 500; }
+        /* A city that currently has a pin is tinted with that pin's colour.
+           The border/glow colours are set inline from the pin, since they vary. */
+        .preset-btn.active { background: var(--bg-raised); }
+        .preset-btn.active strong { font-weight: 600; }
+
+        /* Quick-add is hidden entirely while the animation is running, because a
+           pin added mid-flight has no reconstruction for the displayed time. */
+        #preset-section { transition: opacity 0.2s; }
+        #preset-section.hidden { display: none; }
+        #preset-locked-msg {
+            display: none; font-size: 0.7rem; color: var(--text-dim);
+            font-style: italic; line-height: 1.5;
+        }
+        #preset-locked-msg.visible { display: block; }
 
         /* ── Instructions ── */
         .instruction { font-size: 0.78rem; color: var(--text-muted); line-height: 1.6; }
@@ -197,9 +213,15 @@
         </div>
 
         <!-- Quick-add cities -->
-        <div class="sidebar-section">
+        <div class="sidebar-section" id="preset-section">
             <h2>Quick-add a city</h2>
             <div class="preset-grid" id="preset-grid"></div>
+        </div>
+
+        <!-- Shown in place of quick-add while the animation is running -->
+        <div class="sidebar-section" id="preset-locked-section" style="display:none;">
+            <h2>Quick-add a city</h2>
+            <p id="preset-locked-msg">Paused while animating &mdash; stop the animation to add pins.</p>
         </div>
 
         <!-- Instructions -->
@@ -209,7 +231,7 @@
                 <strong style="color:var(--text);display:block;margin-bottom:0.3rem;">Click the map</strong>
                 to drop a pin &mdash; it is named automatically after the country it lands in. Drag the time slider to watch it drift back through tectonic history.
             </p>
-            <p class="note">Pins on oceanic crust show "subducted" at deep time — place pins on continents for best results.</p>
+            <p class="note">Pins on oceanic crust show "subducted" at deep time &mdash; place pins on continents for best results. Adding pins is disabled while the animation runs.</p>
         </div>
 
         <!-- Pin list -->
@@ -579,6 +601,7 @@ function addPin(lat, lon, label) {
     pins.push(pin);
     positionPin(pin, currentTime);
     renderPinList();
+    syncPresetButtons();
     document.getElementById('clear-btn').style.display = 'block';
     return pin;
 }
@@ -590,13 +613,14 @@ function removePin(id) {
     if (selectedPinId === id) selectedPinId = null;
     redraw();
     renderPinList();
+    syncPresetButtons();
     updateSubductionBanner();
     if (pins.length === 0) document.getElementById('clear-btn').style.display = 'none';
 }
 
 function clearAllPins() {
     pins = []; selectedPinId = null; pinColorIndex = 0;
-    redraw(); renderPinList(); updateSubductionBanner();
+    redraw(); renderPinList(); syncPresetButtons(); updateSubductionBanner();
     document.getElementById('clear-btn').style.display = 'none';
 }
 
@@ -638,6 +662,9 @@ async function reconstructAllPins(time) {
 //  CLICK HANDLER
 // ═══════════════════════════════════════════════════════════
 canvas.addEventListener('click', e => {
+    // No new pins while animating — a pin added mid-flight has no reconstruction
+    // for the frame on screen and would sit at its present-day position against
+    // ancient coastlines. Selecting an existing pin is still allowed below.
     const rect = canvas.getBoundingClientRect();
     const cx   = e.clientX - rect.left;
     const cy   = e.clientY - rect.top;
@@ -650,6 +677,11 @@ canvas.addEventListener('click', e => {
             selectedPinId = pin.id;
             redraw(); renderPinList(); return;
         }
+    }
+
+    if (animRunning) {
+        showStatus('Stop the animation to add a pin', 2000);
+        return;
     }
 
     // Place new pin, auto-labeled with the country it falls in
@@ -724,10 +756,12 @@ animBtn.addEventListener('click', () => {
         animRunning = false;
         animBtn.innerHTML = '&#9654; Animate through time';
         animBtn.classList.remove('playing');
+        setAnimationLock(false);
     } else {
         animRunning = true;
         animBtn.innerHTML = '&#9646;&#9646; Stop';
         animBtn.classList.add('playing');
+        setAnimationLock(true);
         animLoop();
     }
 });
@@ -736,24 +770,79 @@ animBtn.addEventListener('click', () => {
 //  PRESET CITIES
 // ═══════════════════════════════════════════════════════════
 const presetGrid = document.getElementById('preset-grid');
+// Keep a handle on each button, keyed by city name, so its highlight can be
+// synced to the colour of the pin it created (and cleared when that pin goes).
+const presetButtons = new Map();
+
 PRESETS.forEach(p => {
     const btn = document.createElement('button');
     btn.className = 'preset-btn';
     btn.innerHTML = `<strong>${p.name}</strong>${p.lat.toFixed(1)}°, ${p.lon.toFixed(1)}°`;
     btn.addEventListener('click', () => {
+        // No pins while animating: the reconstruction for the displayed time
+        // hasn't been fetched for a pin that doesn't exist yet.
+        if (animRunning) return;
+
+        // Already pinned? Select the existing pin rather than duplicating it.
+        const existing = pins.find(x => x.label === p.name);
+        if (existing) {
+            selectedPinId = existing.id;
+            redraw(); renderPinList(); syncPresetButtons();
+            showStatus(`${p.name} is already pinned`, 2000);
+            return;
+        }
+
         const pin = addPin(p.lat, p.lon, p.name);
         selectedPinId = pin.id;
         reconstructAllPins(currentTime).then(() => {
             if (coastCache[currentTime]) {
-                pins.forEach(p => positionPin(p, displayedTime >= 0 ? displayedTime : currentTime));
+                pins.forEach(q => positionPin(q, displayedTime >= 0 ? displayedTime : currentTime));
                 redraw(); renderPinList();
             }
         });
         showStatus(`Pin placed: ${p.name}`, 2500);
         redraw();
     });
+    presetButtons.set(p.name, btn);
     presetGrid.appendChild(btn);
 });
+
+// Tint each preset button with the colour of its pin, or reset it if that pin
+// no longer exists. Called after any change to `pins`.
+function syncPresetButtons() {
+    presetButtons.forEach((btn, name) => {
+        const pin = pins.find(p => p.label === name);
+        if (pin) {
+            btn.classList.add('active');
+            btn.style.borderColor = pin.color;
+            btn.style.color       = pin.color;
+            btn.style.boxShadow   = `inset 0 0 0 1px ${pin.color}33`;
+            const strong = btn.querySelector('strong');
+            if (strong) strong.style.color = pin.color;
+        } else {
+            btn.classList.remove('active');
+            btn.style.borderColor = '';
+            btn.style.color       = '';
+            btn.style.boxShadow   = '';
+            const strong = btn.querySelector('strong');
+            if (strong) strong.style.color = '';
+        }
+    });
+}
+
+// ═══════════════════════════════════════════════════════════
+//  ANIMATION LOCK  — no pin placement while animating
+// ═══════════════════════════════════════════════════════════
+// A pin created mid-animation would have no reconstruction for the frame on
+// screen, so it would render at its present-day spot against ancient
+// coastlines. Rather than allow that, placement is disabled outright.
+function setAnimationLock(locked) {
+    document.getElementById('preset-section').classList.toggle('hidden', locked);
+    document.getElementById('preset-locked-section').style.display = locked ? 'block' : 'none';
+    document.getElementById('preset-locked-msg').classList.toggle('visible', locked);
+    document.getElementById('map-wrap').classList.toggle('locked', locked);
+    presetButtons.forEach(btn => { btn.disabled = locked; });
+}
 
 // ═══════════════════════════════════════════════════════════
 //  CLEAR ALL
